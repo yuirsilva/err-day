@@ -70,16 +70,83 @@ function mulberry32(seed: number): () => number {
   };
 }
 
+function seededCellNoise(
+  seed: number,
+  x: number,
+  y: number,
+  salt: number,
+): number {
+  let hash = seed;
+  hash ^= Math.imul(x + 1, 374761393);
+  hash ^= Math.imul(y + 1, 668265263);
+  hash ^= Math.imul(salt + 1, 1597334677);
+  hash = Math.imul(hash ^ (hash >>> 13), 1274126177);
+  return ((hash ^ (hash >>> 16)) >>> 0) / 4294967296;
+}
+
 function generateDailyArt(dateKey: string): {
   cells: ArtCell[];
   color: string;
 } {
-  const random = mulberry32(hashSeed(dateKey));
+  const seed = hashSeed(dateKey);
+  const random = mulberry32(seed);
+  const gridSize = Math.floor(Math.sqrt(ART_CELLS));
   const color = DAILY_COLORS[Math.floor(random() * DAILY_COLORS.length)];
-  const cells = Array.from({ length: ART_CELLS }, (_, index) => ({
-    id: `${dateKey}-${index}`,
-    isPainted: random() > 0.62,
-  }));
+  const patternMode = Math.floor(random() * 5);
+  const baseDensity = 0.16 + random() * 0.68;
+  const clusterSize = 2 + Math.floor(random() * 5);
+  const waveX = 0.8 + random() * 3.8;
+  const waveY = 0.8 + random() * 3.8;
+  const phaseX = random() * Math.PI * 2;
+  const phaseY = random() * Math.PI * 2;
+  const centerX = random();
+  const centerY = random();
+  const radius = 0.35 + random() * 0.45;
+
+  const cells = Array.from({ length: ART_CELLS }, (_, index) => {
+    const x = index % gridSize;
+    const y = Math.floor(index / gridSize);
+    const normalizedX = x / (gridSize - 1);
+    const normalizedY = y / (gridSize - 1);
+
+    const fineNoise = seededCellNoise(seed, x, y, 1);
+    const clusterNoise = seededCellNoise(
+      seed,
+      Math.floor(x / clusterSize),
+      Math.floor(y / clusterSize),
+      2,
+    );
+    const wave =
+      (Math.sin(normalizedX * waveX * Math.PI * 2 + phaseX) +
+        Math.cos(normalizedY * waveY * Math.PI * 2 + phaseY) +
+        2) /
+      4;
+    const radialDistance = Math.hypot(
+      normalizedX - centerX,
+      normalizedY - centerY,
+    );
+    const radial = 1 - Math.min(1, radialDistance / radius);
+    const diagonal = 1 - Math.abs(normalizedX - normalizedY);
+
+    let intensity = 0;
+    if (patternMode === 0) {
+      intensity = 0.52 * wave + 0.3 * clusterNoise + 0.18 * fineNoise;
+    } else if (patternMode === 1) {
+      intensity = 0.52 * radial + 0.28 * wave + 0.2 * fineNoise;
+    } else if (patternMode === 2) {
+      intensity = 0.5 * diagonal + 0.3 * clusterNoise + 0.2 * fineNoise;
+    } else if (patternMode === 3) {
+      intensity = 0.7 * clusterNoise + 0.3 * fineNoise;
+    } else {
+      intensity = 0.4 * wave + 0.35 * radial + 0.25 * clusterNoise;
+    }
+
+    const localThresholdJitter = 0.86 + seededCellNoise(seed, x, y, 3) * 0.28;
+    return {
+      id: `${dateKey}-${index}`,
+      isPainted: intensity > baseDensity * localThresholdJitter,
+    };
+  });
   return { cells, color };
 }
 
@@ -117,44 +184,50 @@ function getTodayDateKey(): string {
 }
 
 export default function Home() {
-  const [todayDateKey, setTodayDateKey] = useState("");
-  const [selectedDateKey, setSelectedDateKey] = useState("");
+  const [todayDateKey] = useState(() => getTodayDateKey());
+  const [selectedDateKey, setSelectedDateKey] = useState(() =>
+    getTodayDateKey(),
+  );
   const [entries, setEntries] = useState<Entries>({});
   const [draftEntry, setDraftEntry] = useState("");
+  const [hasLoadedEntries, setHasLoadedEntries] = useState(false);
+
   const [showSaved, setShowSaved] = useState(false);
 
   useEffect(() => {
-    const initialDate = getTodayDateKey();
     const loadedEntries = loadEntries();
-    setTodayDateKey(initialDate);
-    setSelectedDateKey(initialDate);
     setEntries(loadedEntries);
-    setDraftEntry(loadedEntries[initialDate] ?? "");
+    setHasLoadedEntries(true);
   }, []);
 
   useEffect(() => {
-    if (!todayDateKey) {
+    if (!hasLoadedEntries) {
       return;
     }
 
     localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
-  }, [entries, todayDateKey]);
+  }, [entries, hasLoadedEntries]);
 
   useEffect(() => {
-    if (!selectedDateKey) {
+    if (!hasLoadedEntries) {
       return;
     }
 
     setDraftEntry(entries[selectedDateKey] ?? "");
-  }, [entries, selectedDateKey]);
+  }, [entries, hasLoadedEntries, selectedDateKey]);
 
-  useEffect(() => {
-    if (!selectedDateKey) {
-      return;
-    }
-
-    setShowSaved(false);
-  }, [selectedDateKey]);
+  const isTodaySelected = selectedDateKey === todayDateKey;
+  const hasSubmittedForSelectedDay = selectedDateKey
+    ? Object.hasOwn(entries, selectedDateKey)
+    : false;
+  const isEditable = isTodaySelected && !hasSubmittedForSelectedDay;
+  const savedEntry = selectedDateKey ? (entries[selectedDateKey] ?? "") : "";
+  const hasUnsavedChanges = draftEntry !== savedEntry;
+  const overlayCopy = isEditable
+    ? "TODAY IS EDITABLE. WRITE YOUR THOUGHTS."
+    : hasSubmittedForSelectedDay
+      ? "THIS DAY IS LOCKED."
+      : "ONLY TODAY IS EDITABLE.";
 
   useEffect(() => {
     if (!showSaved) {
@@ -165,18 +238,9 @@ export default function Home() {
     return () => window.clearTimeout(timeout);
   }, [showSaved]);
 
-  const isReady = todayDateKey.length > 0;
-  const isTodaySelected = isReady && selectedDateKey === todayDateKey;
-  const hasSubmittedForSelectedDay = selectedDateKey
-    ? Object.hasOwn(entries, selectedDateKey)
-    : false;
-  const isEditable = isTodaySelected && !hasSubmittedForSelectedDay;
-  const savedEntry = selectedDateKey ? (entries[selectedDateKey] ?? "") : "";
-  const hasUnsavedChanges = draftEntry !== savedEntry;
-
   function handleThoughtSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!isEditable) {
+    if (!isEditable || !hasUnsavedChanges) {
       return;
     }
 
@@ -187,7 +251,7 @@ export default function Home() {
     setShowSaved(true);
   }
 
-  const art = useMemo(
+  const currentArt = useMemo(
     () =>
       selectedDateKey
         ? generateDailyArt(selectedDateKey)
@@ -196,145 +260,119 @@ export default function Home() {
   );
 
   return (
-    <main className="min-h-screen bg-neutral-100 text-neutral-900">
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-5 py-8">
-        <header className="border border-neutral-300 bg-white p-4">
-          <h1 className="text-3xl font-semibold tracking-tight">Err Day</h1>
-          <p className="mt-2 text-sm text-neutral-600">
-            One daily thought, one daily generated piece.
-          </p>
-        </header>
-
-        {!isReady ? (
-          <section className="border border-neutral-300 bg-white p-4 text-sm text-neutral-600">
-            Loading today&apos;s entry...
-          </section>
-        ) : (
-          <>
-            <section className="border border-neutral-300 bg-white p-4">
-              <div className="flex flex-wrap items-center gap-3">
-                <button
-                  className="border border-neutral-300 px-3 py-2 text-sm font-medium hover:bg-neutral-100"
-                  onClick={() =>
-                    setSelectedDateKey((previous) => shiftDateKey(previous, -1))
-                  }
-                  type="button"
-                >
-                  Previous day
-                </button>
-                <button
-                  className="border border-neutral-300 px-3 py-2 text-sm font-medium hover:bg-neutral-100"
-                  onClick={() => setSelectedDateKey(todayDateKey)}
-                  type="button"
-                >
-                  Today
-                </button>
-                <button
-                  className="border border-neutral-300 px-3 py-2 text-sm font-medium hover:bg-neutral-100"
-                  onClick={() =>
-                    setSelectedDateKey((previous) => shiftDateKey(previous, 1))
-                  }
-                  type="button"
-                >
-                  Next day
-                </button>
-                <strong className="text-sm">
-                  {formatDisplayDate(selectedDateKey)}
-                </strong>
-                <span className="text-xs uppercase tracking-wide text-neutral-500">
-                  {isEditable
-                    ? "Editable"
-                    : hasSubmittedForSelectedDay
-                      ? "Submitted"
-                      : "Read only"}
-                </span>
-              </div>
-            </section>
-
-            <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
-              <section className="border border-neutral-300 bg-white p-4">
-                <h2 className="text-lg font-semibold">Thought for the day</h2>
-                <p className="mt-2 text-sm text-neutral-600">
-                  Write feelings, goals, or what happened today.
+    <main className="min-h-screen bg-white text-black">
+      <div className="flex min-h-screen flex-col p-5">
+        <section className="flex items-start justify-between gap-10 max-[1200px]:flex-col">
+          <form
+            className="w-full max-w-158 space-y-4"
+            onSubmit={handleThoughtSubmit}
+          >
+            <div className="flex relative h-49 border-2 border-black">
+              <textarea
+                name="thought-description"
+                className="h-full w-full resize-none bg-transparent p-5 text-base tracking-[0.08em] field-sizing-fixed outline-none disabled:cursor-default"
+                disabled={!isEditable}
+                onChange={(event) => {
+                  setDraftEntry(event.target.value);
+                  setShowSaved(false);
+                }}
+                value={draftEntry}
+              />
+              {draftEntry.length === 0 ? (
+                <p className="pointer-events-none absolute inset-0 grid place-items-center px-8 text-center text-base tracking-[0.08em]">
+                  {overlayCopy}
                 </p>
-                <form className="mt-4" onSubmit={handleThoughtSubmit}>
-                  <textarea
-                    className="min-h-72 w-full border border-neutral-300 p-3 text-sm outline-none focus:border-neutral-500 disabled:bg-neutral-100 disabled:text-neutral-500"
-                    disabled={!isEditable}
-                    onChange={(event) => {
-                      setDraftEntry(event.target.value);
-                      setShowSaved(false);
-                    }}
-                    placeholder={
-                      isEditable
-                        ? "Today is editable. Write your thought."
-                        : hasSubmittedForSelectedDay
-                          ? "This thought was already submitted and is now locked."
-                          : "This day is locked. You can only edit today."
-                    }
-                    value={draftEntry}
-                  />
-                  <div className="mt-3 flex flex-wrap items-center gap-3">
-                    <button
-                      className="border border-neutral-300 bg-neutral-900 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:border-neutral-200 disabled:bg-neutral-300"
-                      disabled={!isEditable || !hasUnsavedChanges}
-                      type="submit"
-                    >
-                      Capture this thought
-                    </button>
-                    <AnimatePresence mode="wait">
-                      {showSaved ? (
-                        <motion.p
-                          animate={{ opacity: 1, y: 0 }}
-                          className="text-xs font-medium text-emerald-700"
-                          exit={{ opacity: 0, y: -8 }}
-                          initial={{ opacity: 0, y: 8 }}
-                          key={`${selectedDateKey}-${savedEntry.length}`}
-                          transition={{ duration: 0.25, ease: "easeOut" }}
-                        >
-                          Thought saved for today.
-                        </motion.p>
-                      ) : null}
-                    </AnimatePresence>
-                  </div>
-                </form>
-                <p className="mt-2 text-xs text-neutral-500">
-                  {isEditable
-                    ? "You can edit until you submit this thought."
-                    : hasSubmittedForSelectedDay
-                      ? "Today is already submitted and cannot be edited again."
-                      : "Navigate to today to edit your entry."}
-                </p>
-              </section>
-
-              <section className="border border-neutral-300 bg-white p-4">
-                <h2 className="text-lg font-semibold">Daily art</h2>
-                <p className="mt-2 text-sm text-neutral-600">
-                  20x20 generated pattern with one color tied to this date.
-                </p>
-                <div className="mt-4 grid aspect-square w-full max-w-80 grid-cols-20 border border-neutral-300 bg-neutral-50">
-                  {art.cells.map((cell) => (
-                    <div
-                      className="border border-neutral-200"
-                      key={cell.id}
-                      style={{
-                        backgroundColor: cell.isPainted
-                          ? art.color
-                          : "transparent",
-                      }}
-                    />
-                  ))}
-                </div>
-                <p className="mt-3 text-xs text-neutral-500">
-                  Daily color: <span className="font-mono">{art.color}</span>
-                </p>
-                <p className="mt-1 text-xs text-neutral-500">
-                  Pattern is deterministic and changes by day.
-                </p>
-              </section>
+              ) : null}
             </div>
-          </>
-        )}
+            <div className="flex flex-col gap-4">
+              <button
+                className="h-8 w-full bg-black px-4 text-base text-white disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={!isEditable || !hasUnsavedChanges}
+                type="submit"
+              >
+                CAPTURE THIS THOUGHT
+              </button>
+              <AnimatePresence mode="wait">
+                {showSaved ? (
+                  <motion.p
+                    animate={{ opacity: 1, y: 0 }}
+                    className="text-xs font-medium text-emerald-700"
+                    exit={{ opacity: 0, y: -8 }}
+                    initial={{ opacity: 0, y: 8 }}
+                    key={`${selectedDateKey}-${savedEntry.length}`}
+                    transition={{ duration: 0.25, ease: "easeOut" }}
+                  >
+                    Thought saved for today.
+                  </motion.p>
+                ) : null}
+              </AnimatePresence>
+            </div>
+          </form>
+
+          <section
+            aria-label="Current daily art"
+            className="relative h-88 w-82 shrink-0"
+          >
+            <div className="absolute inset-3.5">
+              <div className="grid h-full w-full grid-cols-20">
+                {currentArt.cells.map((cell) => (
+                  <div
+                    key={cell.id}
+                    style={{
+                      backgroundColor: cell.isPainted
+                        ? currentArt.color
+                        : "transparent",
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <footer className="mt-auto grid grid-cols-1 items-end gap-6 pt-10 min-[1200px]:grid-cols-[1fr_auto_1fr]">
+          <div className="space-y-2">
+            <p>ERR DAY</p>
+            <p>ONE DAILY THOUGHT, ONE DAILY GENERATED PIECE.</p>
+          </div>
+
+          <p className="justify-self-start text-base tracking-[0.08em] min-[1200px]:justify-self-center">
+            {formatDisplayDate(selectedDateKey)}
+          </p>
+
+          <div className="flex flex-wrap justify-start gap-3 min-[1200px]:justify-self-end [&_button]:cursor-pointer [&_button]:hover:bg-neutral-100 [&_button]:transition-colors">
+            <button
+              className="h-8 border-2 border-black px-2.5 text-base"
+              onClick={() => {
+                setSelectedDateKey((previous) => shiftDateKey(previous, -1));
+                setShowSaved(false);
+              }}
+              type="button"
+            >
+              PREVIOUS DAY
+            </button>
+            <button
+              className="h-8 border-2 border-black px-2.5 text-base"
+              onClick={() => {
+                setSelectedDateKey(todayDateKey);
+                setShowSaved(false);
+              }}
+              type="button"
+            >
+              TODAY
+            </button>
+            <button
+              className="h-8 border-2 border-black px-2.5 text-base"
+              onClick={() => {
+                setSelectedDateKey((previous) => shiftDateKey(previous, 1));
+                setShowSaved(false);
+              }}
+              type="button"
+            >
+              NEXT DAY
+            </button>
+          </div>
+        </footer>
       </div>
     </main>
   );
