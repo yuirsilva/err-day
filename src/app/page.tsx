@@ -99,11 +99,14 @@ function loadEntries(): Entries {
       return {};
     }
 
-    return Object.fromEntries(
-      Object.entries(parsed).filter(
-        ([key, value]) => typeof key === "string" && typeof value === "string",
-      ),
-    );
+    const nextEntries: Entries = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === "string") {
+        nextEntries[key] = value;
+      }
+    }
+
+    return nextEntries;
   } catch {
     return {};
   }
@@ -277,7 +280,7 @@ export default function Home() {
                       disabled={!isEditable || !hasUnsavedChanges}
                       type="submit"
                     >
-                      Capture This Thought
+                      Capture this thought
                     </button>
                     <AnimatePresence mode="wait">
                       {showSaved ? (
