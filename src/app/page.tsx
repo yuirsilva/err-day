@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 
 const STORAGE_KEY = "err-day:entries:v1";
 const ART_CELLS = 400;
@@ -116,12 +117,16 @@ export default function Home() {
   const [todayDateKey, setTodayDateKey] = useState("");
   const [selectedDateKey, setSelectedDateKey] = useState("");
   const [entries, setEntries] = useState<Entries>({});
+  const [draftEntry, setDraftEntry] = useState("");
+  const [showSaved, setShowSaved] = useState(false);
 
   useEffect(() => {
     const initialDate = getTodayDateKey();
+    const loadedEntries = loadEntries();
     setTodayDateKey(initialDate);
     setSelectedDateKey(initialDate);
-    setEntries(loadEntries());
+    setEntries(loadedEntries);
+    setDraftEntry(loadedEntries[initialDate] ?? "");
   }, []);
 
   useEffect(() => {
@@ -132,9 +137,52 @@ export default function Home() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
   }, [entries, todayDateKey]);
 
+  useEffect(() => {
+    if (!selectedDateKey) {
+      return;
+    }
+
+    setDraftEntry(entries[selectedDateKey] ?? "");
+  }, [entries, selectedDateKey]);
+
+  useEffect(() => {
+    if (!selectedDateKey) {
+      return;
+    }
+
+    setShowSaved(false);
+  }, [selectedDateKey]);
+
+  useEffect(() => {
+    if (!showSaved) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => setShowSaved(false), 3200);
+    return () => window.clearTimeout(timeout);
+  }, [showSaved]);
+
   const isReady = todayDateKey.length > 0;
-  const isEditable = isReady && selectedDateKey === todayDateKey;
-  const currentEntry = selectedDateKey ? (entries[selectedDateKey] ?? "") : "";
+  const isTodaySelected = isReady && selectedDateKey === todayDateKey;
+  const hasSubmittedForSelectedDay = selectedDateKey
+    ? Object.hasOwn(entries, selectedDateKey)
+    : false;
+  const isEditable = isTodaySelected && !hasSubmittedForSelectedDay;
+  const savedEntry = selectedDateKey ? (entries[selectedDateKey] ?? "") : "";
+  const hasUnsavedChanges = draftEntry !== savedEntry;
+
+  function handleThoughtSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!isEditable) {
+      return;
+    }
+
+    setEntries((previous) => ({
+      ...previous,
+      [selectedDateKey]: draftEntry,
+    }));
+    setShowSaved(true);
+  }
 
   const art = useMemo(
     () =>
@@ -191,7 +239,11 @@ export default function Home() {
                   {formatDisplayDate(selectedDateKey)}
                 </strong>
                 <span className="text-xs uppercase tracking-wide text-neutral-500">
-                  {isEditable ? "Editable" : "Read only"}
+                  {isEditable
+                    ? "Editable"
+                    : hasSubmittedForSelectedDay
+                      ? "Submitted"
+                      : "Read only"}
                 </span>
               </div>
             </section>
@@ -202,27 +254,53 @@ export default function Home() {
                 <p className="mt-2 text-sm text-neutral-600">
                   Write feelings, goals, or what happened today.
                 </p>
-                <textarea
-                  className="mt-4 min-h-72 w-full border border-neutral-300 p-3 text-sm outline-none focus:border-neutral-500 disabled:bg-neutral-100 disabled:text-neutral-500"
-                  disabled={!isEditable}
-                  onChange={(event) => {
-                    const value = event.target.value;
-                    setEntries((previous) => ({
-                      ...previous,
-                      [selectedDateKey]: value,
-                    }));
-                  }}
-                  placeholder={
-                    isEditable
-                      ? "Today is editable. Write your thought."
-                      : "This day is locked. You can only edit today."
-                  }
-                  value={currentEntry}
-                />
+                <form className="mt-4" onSubmit={handleThoughtSubmit}>
+                  <textarea
+                    className="min-h-72 w-full border border-neutral-300 p-3 text-sm outline-none focus:border-neutral-500 disabled:bg-neutral-100 disabled:text-neutral-500"
+                    disabled={!isEditable}
+                    onChange={(event) => {
+                      setDraftEntry(event.target.value);
+                      setShowSaved(false);
+                    }}
+                    placeholder={
+                      isEditable
+                        ? "Today is editable. Write your thought."
+                        : hasSubmittedForSelectedDay
+                          ? "This thought was already submitted and is now locked."
+                          : "This day is locked. You can only edit today."
+                    }
+                    value={draftEntry}
+                  />
+                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                    <button
+                      className="border border-neutral-300 bg-neutral-900 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:border-neutral-200 disabled:bg-neutral-300"
+                      disabled={!isEditable || !hasUnsavedChanges}
+                      type="submit"
+                    >
+                      Capture This Thought
+                    </button>
+                    <AnimatePresence mode="wait">
+                      {showSaved ? (
+                        <motion.p
+                          animate={{ opacity: 1, y: 0 }}
+                          className="text-xs font-medium text-emerald-700"
+                          exit={{ opacity: 0, y: -8 }}
+                          initial={{ opacity: 0, y: 8 }}
+                          key={`${selectedDateKey}-${savedEntry.length}`}
+                          transition={{ duration: 0.25, ease: "easeOut" }}
+                        >
+                          Thought saved for today.
+                        </motion.p>
+                      ) : null}
+                    </AnimatePresence>
+                  </div>
+                </form>
                 <p className="mt-2 text-xs text-neutral-500">
                   {isEditable
-                    ? "Only the current day can be edited."
-                    : "Navigate to today to edit your entry."}
+                    ? "You can edit until you submit this thought."
+                    : hasSubmittedForSelectedDay
+                      ? "Today is already submitted and cannot be edited again."
+                      : "Navigate to today to edit your entry."}
                 </p>
               </section>
 
@@ -231,7 +309,7 @@ export default function Home() {
                 <p className="mt-2 text-sm text-neutral-600">
                   20x20 generated pattern with one color tied to this date.
                 </p>
-                <div className="mt-4 grid aspect-square w-full max-w-80 grid-cols-[repeat(20,minmax(0,1fr))] border border-neutral-300 bg-neutral-50">
+                <div className="mt-4 grid aspect-square w-full max-w-80 grid-cols-20 border border-neutral-300 bg-neutral-50">
                   {art.cells.map((cell) => (
                     <div
                       className="border border-neutral-200"
