@@ -15,8 +15,13 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Err Day",
   description: "A daily thought journal with generated daily art.",
+  manifest: "/manifest.webmanifest",
   icons: {
-    icon: "/favicon.ico",
+    icon: [
+      { url: "/favicon.ico", sizes: "32x32" },
+      { url: "/icon.svg", type: "image/svg+xml" },
+    ],
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180" }],
   },
 };
 
